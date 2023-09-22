@@ -35,41 +35,60 @@ var (
 
 // finalizer represents the finalizer component of the sequencer.
 type finalizer struct {
-	cfg                     FinalizerCfg
-	effectiveGasPriceCfg    EffectiveGasPriceCfg
-	closingSignalCh         ClosingSignalCh
-	isSynced                func(ctx context.Context) bool
-	sequencerAddress        common.Address
-	worker                  workerInterface
-	dbManager               dbManagerInterface
-	executor                stateInterface
-	batch                   *WipBatch
-	batchConstraints        batchConstraints
-	processRequest          state.ProcessRequest
+	cfg                  FinalizerCfg
+	effectiveGasPriceCfg EffectiveGasPriceCfg
+	closingSignalCh      ClosingSignalCh
+	isSynced             func(ctx context.Context) bool
+	sequencerAddress     common.Address
+	worker               workerInterface
+	dbManager            dbManagerInterface
+
+	// NOTE: zkevm prover execute 客户端
+	executor stateInterface
+
+	// NOTE: 当前批次
+	batch *WipBatch
+
+	// NOTE: 批次限制
+	batchConstraints batchConstraints
+
+	// NOTE: prover执行交易请求参数
+	processRequest state.ProcessRequest
+	//
 	sharedResourcesMux      *sync.RWMutex
 	lastGERHash             common.Hash
 	reprocessFullBatchError atomic.Bool
+
+	// NOTE: 全局状态更新相关
 	// closing signals
-	nextGER                 common.Hash
-	nextGERDeadline         int64
-	nextGERMux              *sync.RWMutex
+	nextGER         common.Hash
+	nextGERDeadline int64
+	nextGERMux      *sync.RWMutex
+
+	// NOTE: forced batch
 	nextForcedBatches       []state.ForcedBatch
 	nextForcedBatchDeadline int64
 	nextForcedBatchesMux    *sync.RWMutex
-	handlingL2Reorg         bool
+
+	handlingL2Reorg bool
 	// event log
 	eventLog *event.EventLog
 	// effective gas price calculation
 	maxBreakEvenGasPriceDeviationPercentage *big.Int
 	defaultMinGasPriceAllowed               uint64
 	// Processed txs
+
+	// NOTE: 交易异步入库
 	pendingTransactionsToStore   chan transactionToStore
 	pendingTransactionsToStoreWG *sync.WaitGroup
-	storedFlushID                uint64
-	storedFlushIDCond            *sync.Cond //Condition to wait until storedFlushID has been updated
-	proverID                     string
-	lastPendingFlushID           uint64
-	pendingFlushIDCond           *sync.Cond
+
+	storedFlushID     uint64
+	storedFlushIDCond *sync.Cond //Condition to wait until storedFlushID has been updated
+
+	// NOTE: 和 zkprover 有关
+	proverID           string
+	lastPendingFlushID uint64
+	pendingFlushIDCond *sync.Cond
 }
 
 type transactionToStore struct {
@@ -87,12 +106,17 @@ type transactionToStore struct {
 
 // WipBatch represents a work-in-progress batch.
 type WipBatch struct {
-	batchNumber        uint64
-	coinbase           common.Address
-	initialStateRoot   common.Hash
-	stateRoot          common.Hash
-	localExitRoot      common.Hash
-	timestamp          time.Time
+	// NOTE: 批次编号
+	batchNumber uint64
+	coinbase    common.Address
+	// NOTE: 批次未执行前的RootHash
+	initialStateRoot common.Hash
+	// NOTE: 批次执行后的RootHash
+	stateRoot common.Hash
+	// TODO:
+	localExitRoot common.Hash
+	timestamp     time.Time
+	// TODO:
 	globalExitRoot     common.Hash // 0x000...0 (ZeroHash) means to not update
 	remainingResources state.BatchResources
 	countOfTxs         int
@@ -326,10 +350,12 @@ func (f *finalizer) finalizeBatches(ctx context.Context) {
 	log.Debug("finalizer init loop")
 	for {
 		start := now()
+		// NOTE: 测试用的，到指定batchnumber停止
 		if f.batch.batchNumber == f.cfg.StopSequencerOnBatchNum {
 			f.halt(ctx, fmt.Errorf("finalizer reached stop sequencer batch number: %v", f.cfg.StopSequencerOnBatchNum))
 		}
 
+		// NOTE: 从池子里面获取最优的交易
 		tx := f.worker.GetBestFittingTx(f.batch.remainingResources)
 		metrics.WorkerProcessingTime(time.Since(start))
 		if tx != nil {
@@ -340,6 +366,7 @@ func (f *finalizer) finalizeBatches(ctx context.Context) {
 
 			f.sharedResourcesMux.Lock()
 			for {
+				// NOTE: 执行交易
 				_, err := f.processTransaction(ctx, tx)
 				if err != nil {
 					if err == ErrEffectiveGasPriceReprocess {
@@ -371,6 +398,7 @@ func (f *finalizer) finalizeBatches(ctx context.Context) {
 			log.Infof("closing batch %d because deadline was encountered.", f.batch.batchNumber)
 			f.finalizeBatch(ctx)
 		} else if f.isBatchFull() || f.isBatchAlmostFull() {
+			// NOTE: 该批次已经满了，或者资源利用已经达到了的限制
 			log.Infof("closing batch %d because it's almost full.", f.batch.batchNumber)
 			f.finalizeBatch(ctx)
 		}
@@ -400,6 +428,7 @@ func (f *finalizer) sortForcedBatches(fb []state.ForcedBatch) []state.ForcedBatc
 }
 
 // isBatchFull checks if the batch is full
+// 判断当前批次是否已经满了
 func (f *finalizer) isBatchFull() bool {
 	if f.batch.countOfTxs >= int(f.batchConstraints.MaxTxsPerBatch) {
 		log.Infof("Closing batch: %d, because it's full.", f.batch.batchNumber)
@@ -410,6 +439,7 @@ func (f *finalizer) isBatchFull() bool {
 }
 
 // finalizeBatch retries to until successful closes the current batch and opens a new one, potentially processing forced batches between the batch is closed and the resulting new empty batch
+// NOTE: 处理当前批次，并且开启新的批次
 func (f *finalizer) finalizeBatch(ctx context.Context) {
 	start := time.Now()
 	defer func() {
@@ -473,6 +503,7 @@ func (f *finalizer) newWIPBatch(ctx context.Context) (*WipBatch, error) {
 	f.sharedResourcesMux.Lock()
 	defer f.sharedResourcesMux.Unlock()
 
+	// NOTE: 等待所有已经处理的交易入库
 	// Wait until all processed transactions are saved
 	startWait := time.Now()
 	f.pendingTransactionsToStoreWG.Wait()
@@ -509,6 +540,7 @@ func (f *finalizer) newWIPBatch(ctx context.Context) (*WipBatch, error) {
 		}()
 	}
 
+	// NOTE: 关闭当前批次, 也就是打包当前批次
 	// Close the current batch
 	err = f.closeBatch(ctx)
 	if err != nil {
@@ -536,6 +568,7 @@ func (f *finalizer) newWIPBatch(ctx context.Context) (*WipBatch, error) {
 	f.nextGERDeadline = 0
 	f.nextGERMux.Unlock()
 
+	// NOTE: 开启新的批次
 	batch, err := f.openWIPBatch(ctx, lastBatchNumber+1, f.lastGERHash, stateRoot)
 	if err == nil {
 		f.processRequest.Timestamp = batch.timestamp
@@ -549,6 +582,7 @@ func (f *finalizer) newWIPBatch(ctx context.Context) (*WipBatch, error) {
 }
 
 // processTransaction processes a single transaction.
+// NOTE: 执行单笔交易
 func (f *finalizer) processTransaction(ctx context.Context, tx *TxTracker) (errWg *sync.WaitGroup, err error) {
 	var txHash string
 	if tx != nil {
@@ -624,14 +658,17 @@ func (f *finalizer) processTransaction(ctx context.Context, tx *TxTracker) (errW
 	}
 
 	log.Infof("processTransaction: single tx. Batch.BatchNumber: %d, BatchNumber: %d, OldStateRoot: %s, txHash: %s, GER: %s", f.batch.batchNumber, f.processRequest.BatchNumber, f.processRequest.OldStateRoot, hashStr, f.processRequest.GlobalExitRoot.String())
+	// NOTE: 调用 zkprover 去执行交易
 	processBatchResponse, err := f.executor.ProcessBatch(ctx, f.processRequest, true)
 	if err != nil && errors.Is(err, runtime.ErrExecutorDBError) {
 		log.Errorf("failed to process transaction: %s", err)
 		return nil, err
 	} else if err == nil && !processBatchResponse.IsRomLevelError && len(processBatchResponse.Responses) == 0 && tx != nil {
+		// NOTE: 致命错误级别, zkevm 内部错误
 		err = fmt.Errorf("executor returned no errors and no responses for tx: %s", tx.HashStr)
 		f.halt(ctx, err)
 	} else if processBatchResponse.IsExecutorLevelError && tx != nil {
+		// NOTE: 如果是执行层的错误，从交易池中删除交易，并且更新交易状态为 Invalid
 		log.Errorf("error received from executor. Error: %v", err)
 		// Delete tx from the worker
 		f.worker.DeleteTx(tx.Hash, tx.From)
@@ -647,6 +684,7 @@ func (f *finalizer) processTransaction(ctx context.Context, tx *TxTracker) (errW
 		return nil, err
 	}
 
+	// NOTE: 处理交易执行结果
 	oldStateRoot := f.batch.stateRoot
 	if len(processBatchResponse.Responses) > 0 && tx != nil {
 		errWg, err = f.handleProcessTransactionResponse(ctx, tx, processBatchResponse, oldStateRoot)
@@ -654,6 +692,8 @@ func (f *finalizer) processTransaction(ctx context.Context, tx *TxTracker) (errW
 			return errWg, err
 		}
 	}
+
+	//
 	// Update in-memory batch and processRequest
 	f.processRequest.OldStateRoot = processBatchResponse.NewStateRoot
 	f.batch.stateRoot = processBatchResponse.NewStateRoot
@@ -673,6 +713,7 @@ func (f *finalizer) handleProcessTransactionResponse(ctx context.Context, tx *Tx
 		return errWg, result.Responses[0].RomError
 	}
 
+	// NOTE: 更新当前已经使用的资源
 	// Check remaining resources
 	err = f.checkRemainingResources(result, tx)
 	if err != nil {
@@ -719,10 +760,13 @@ func (f *finalizer) handleProcessTransactionResponse(ctx context.Context, tx *Tx
 
 	f.updateLastPendingFlushID(result.FlushID)
 
+	// NOTE: 交易执行成功，将交易插入到数据库中
 	f.addPendingTxToStore(ctx, txToStore)
 
+	// NOTE: 更新当前批次交易数量
 	f.batch.countOfTxs++
 
+	// NOTE: 通知worker 交易已经处理完毕，该从交易池中删掉了
 	f.updateWorkerAfterSuccessfulProcessing(ctx, tx.Hash, tx.From, false, result)
 
 	return nil, nil
@@ -1025,6 +1069,7 @@ func (f *finalizer) processForcedBatch(ctx context.Context, lastBatchNumberInSta
 	return lastBatchNumberInState, stateRoot
 }
 
+// TODO: 开启新的批次
 // openWIPBatch opens a new batch in the state and returns it as WipBatch
 func (f *finalizer) openWIPBatch(ctx context.Context, batchNum uint64, ger, stateRoot common.Hash) (*WipBatch, error) {
 	dbTx, err := f.dbManager.BeginStateTransaction(ctx)
@@ -1066,6 +1111,7 @@ func (f *finalizer) openWIPBatch(ctx context.Context, batchNum uint64, ger, stat
 }
 
 // closeBatch closes the current batch in the state
+// NOTE: 打包批次
 func (f *finalizer) closeBatch(ctx context.Context) error {
 	transactions, effectivePercentages, err := f.dbManager.GetTransactionsByBatchNumber(ctx, f.batch.batchNumber)
 	if err != nil {
@@ -1087,6 +1133,7 @@ func (f *finalizer) closeBatch(ctx context.Context) error {
 	return f.dbManager.CloseBatch(ctx, receipt)
 }
 
+// NOTE: 开启新的批次
 // openBatch opens a new batch in the state
 func (f *finalizer) openBatch(ctx context.Context, num uint64, ger common.Hash, dbTx pgx.Tx) (state.ProcessingContext, error) {
 	processingCtx := state.ProcessingContext{
@@ -1216,16 +1263,22 @@ func (f *finalizer) getOldStateRootFromBatches(batches []*state.Batch) common.Ha
 // isDeadlineEncountered returns true if any closing signal deadline is encountered
 func (f *finalizer) isDeadlineEncountered() bool {
 	// Forced batch deadline
+	// TODO: forced batch 超时
 	if f.nextForcedBatchDeadline != 0 && now().Unix() >= f.nextForcedBatchDeadline {
 		log.Infof("Closing batch: %d, forced batch deadline encountered.", f.batch.batchNumber)
 		return true
 	}
+
+	// TODO: global deadline 超时
 	// Global Exit Root deadline
 	if f.nextGERDeadline != 0 && now().Unix() >= f.nextGERDeadline {
 		log.Infof("Closing batch: %d, Global Exit Root deadline encountered.", f.batch.batchNumber)
 		f.batch.closingReason = state.GlobalExitRootDeadlineClosingReason
 		return true
 	}
+
+	// TODO: 时间修正, 批次不为空 并且 批次创建时间 + 修正时间 < 当前时间
+	// NOTE: 假设该配置是10s, 看起来像是 如果10秒内批次有交易，那么就立马打包
 	// Timestamp resolution deadline
 	if !f.batch.isEmpty() && f.batch.timestamp.Add(f.cfg.TimestampResolution.Duration).Before(time.Now()) {
 		log.Infof("Closing batch: %d, because of timestamp resolution.", f.batch.batchNumber)
@@ -1235,6 +1288,7 @@ func (f *finalizer) isDeadlineEncountered() bool {
 	return false
 }
 
+// NOTE: 检查当前批次剩余资源
 // checkRemainingResources checks if the transaction uses less resources than the remaining ones in the batch.
 func (f *finalizer) checkRemainingResources(result *state.ProcessBatchResponse, tx *TxTracker) error {
 	usedResources := state.BatchResources{
@@ -1254,6 +1308,7 @@ func (f *finalizer) checkRemainingResources(result *state.ProcessBatchResponse, 
 	return nil
 }
 
+// TODO: 判断是资源是否达到限制
 // isBatchAlmostFull checks if the current batch remaining resources are under the Constraints threshold for most efficient moment to close a batch
 func (f *finalizer) isBatchAlmostFull() bool {
 	resources := f.batch.remainingResources
@@ -1314,6 +1369,7 @@ func (f *finalizer) getConstraintThresholdUint32(input uint32) uint32 {
 	return uint32(input*f.cfg.ResourcePercentageToCloseBatch) / oneHundred
 }
 
+// NOTE: 获取当前批次已经使用的资源情况
 // getUsedBatchResources returns the used resources in the batch
 func getUsedBatchResources(constraints batchConstraints, remainingResources state.BatchResources) state.BatchResources {
 	return state.BatchResources{

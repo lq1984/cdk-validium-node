@@ -23,12 +23,12 @@ message AggregatorMessage
     string id = 1;
     oneof request
     {
-        GetStatusRequest get_status_request = 2;
-        GenBatchProofRequest gen_batch_proof_request = 3;
-        GenAggregatedProofRequest gen_aggregated_proof_request = 4;
-        GenFinalProofRequest gen_final_proof_request = 5;
-        CancelRequest cancel_request = 6;
-        GetProofRequest get_proof_request = 7;
+        GetStatusRequest get_status_request = 2; // NOTE: 查询Prover状态
+        GenBatchProofRequest gen_batch_proof_request = 3; // NOTE: 生成BatchProver
+        GenAggregatedProofRequest gen_aggregated_proof_request = 4; // NOTE: 聚合证明
+        GenFinalProofRequest gen_final_proof_request = 5; // NOTE: 生成最终证明
+        CancelRequest cancel_request = 6; // NOTE: 取消
+        GetProofRequest get_proof_request = 7; // NOTE: 查询证明状态
     }
 }
 
@@ -56,7 +56,7 @@ message ProverMessage
 message GetStatusRequest {}
 
 /**
- * @dev GenBatchProofRequest
+ * @dev GenBatchProofRequest , NOTE: 生成批次证明
  * @param {input} - input prover
  */
 message GenBatchProofRequest {
@@ -64,7 +64,7 @@ message GenBatchProofRequest {
 }
 
 /**
- * @dev GenAggregatedProofRequest
+ * @dev GenAggregatedProofRequest TODO: 聚合证明，将两个证明聚合在一起？
  * @param {recursive_proof_1} - proof json of the first batch to aggregate
  * @param {recursive_proof_2} - proof json of the second batch to aggregate
  */
@@ -74,7 +74,7 @@ message GenAggregatedProofRequest {
 }
 
 /**
- * @dev GenFinalProofRequest
+ * @dev GenFinalProofRequest NOTE: 生成最终证明
  * @param {recursive_proof} - proof json of the batch or aggregated proof to finalise
  * @param {aggregator_addr} - address of the aggregator
  */

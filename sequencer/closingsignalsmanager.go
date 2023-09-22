@@ -25,6 +25,7 @@ func (c *closingSignalsManager) Start() {
 	go c.checkGERUpdate()
 }
 
+// NOTE: 这个方法从layer上获取最新的状态Hash
 func (c *closingSignalsManager) checkGERUpdate() {
 	lastBatch, err := c.dbManager.GetLastBatch(c.ctx)
 	for err != nil {
@@ -36,12 +37,14 @@ func (c *closingSignalsManager) checkGERUpdate() {
 	for {
 		time.Sleep(c.cfg.ClosingSignalsManagerWaitForCheckingGER.Duration)
 
+		// NOTE: 获取L1区块高度
 		lastL1BlockNumber, err := c.etherman.GetLatestBlockNumber(c.ctx)
 		if err != nil {
 			log.Errorf("error getting latest L1 block number: %v", err)
 			continue
 		}
 
+		// NOTE: 敲定 lastL1BlockNumber - GERFinalityNumberOfBlocks 之前的区块
 		maxBlockNumber := uint64(0)
 		if c.cfg.GERFinalityNumberOfBlocks <= lastL1BlockNumber {
 			maxBlockNumber = lastL1BlockNumber - c.cfg.GERFinalityNumberOfBlocks
@@ -53,6 +56,7 @@ func (c *closingSignalsManager) checkGERUpdate() {
 			continue
 		}
 
+		// NOTE: 通知状态变化
 		if ger.GlobalExitRoot != lastGERSent {
 			log.Debugf("sending GER update signal (GER: %v)", ger.GlobalExitRoot)
 			c.closingSignalCh.GERCh <- ger.GlobalExitRoot
@@ -61,6 +65,7 @@ func (c *closingSignalsManager) checkGERUpdate() {
 	}
 }
 
+// NOTE: 处理forced batch
 func (c *closingSignalsManager) checkForcedBatches() {
 	for {
 		time.Sleep(c.cfg.ClosingSignalsManagerWaitForCheckingForcedBatches.Duration)

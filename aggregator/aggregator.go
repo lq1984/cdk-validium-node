@@ -49,15 +49,27 @@ type Aggregator struct {
 
 	cfg Config
 
-	State                   stateInterface
-	EthTxManager            ethTxManager
-	Ethman                  etherman
-	ProfitabilityChecker    aggregatorTxProfitabilityChecker
-	TimeSendFinalProof      time.Time
+	State stateInterface
+
+	// NOTE: 用于发送L1交易
+	EthTxManager ethTxManager
+
+	// NOTE: 用于查询链上信息
+	Ethman etherman
+
+	// TODO:
+	ProfitabilityChecker aggregatorTxProfitabilityChecker
+
+	// NOTE: 发送proof到L1定时器
+	TimeSendFinalProof time.Time
+
 	TimeCleanupLockedProofs types.Duration
-	StateDBMutex            *sync.Mutex
+
+	StateDBMutex *sync.Mutex
+
 	TimeSendFinalProofMutex *sync.RWMutex
 
+	// NOTE: 队列，用于存放verifyBatch Msg, 异步发送verifyBatch交易到layer1
 	finalProof     chan finalProofMsg
 	verifyingProof bool
 
@@ -110,11 +122,13 @@ func (a *Aggregator) Start(ctx context.Context) error {
 
 	metrics.Register()
 
+	// NOTE: 先处理下当前正在发送的L1 verifyBatch 交易
 	// process monitored batch verifications before starting
 	a.EthTxManager.ProcessPendingMonitoredTxs(ctx, ethTxManagerOwner, func(result ethtxmanager.MonitoredTxResult, dbTx pgx.Tx) {
 		a.handleMonitoredTxResult(result)
 	}, nil)
 
+	// NOTE: 删除未生成的证明
 	// Delete ungenerated recursive proofs
 	err := a.State.DeleteUngeneratedProofs(ctx, nil)
 	if err != nil {
@@ -197,6 +211,7 @@ func (a *Aggregator) Channel(stream prover.AggregatorService_ChannelServer) erro
 			return ctx.Err()
 
 		default:
+			// NOTE: prover 是否空闲，否则重试
 			isIdle, err := prover.IsIdle()
 			if err != nil {
 				log.Errorf("Failed to check if prover is idle: %v", err)
@@ -209,16 +224,19 @@ func (a *Aggregator) Channel(stream prover.AggregatorService_ChannelServer) erro
 				continue
 			}
 
+			// NOTE: 轮询批次证明，直到
 			_, err = a.tryBuildFinalProof(ctx, prover, nil)
 			if err != nil {
 				log.Errorf("Error checking proofs to verify: %v", err)
 			}
 
+			// NOTE: 尝试聚合证明
 			proofGenerated, err := a.tryAggregateProofs(ctx, prover)
 			if err != nil {
 				log.Errorf("Error trying to aggregate proofs: %v", err)
 			}
 			if !proofGenerated {
+				// NOTE: 尝试生成批次证明
 				proofGenerated, err = a.tryGenerateBatchProof(ctx, prover)
 				if err != nil {
 					log.Errorf("Error trying to generate proof: %v", err)
@@ -249,8 +267,10 @@ func (a *Aggregator) sendFinalProof() {
 			log.WithFields("proofId", proof.ProofID, "batches", fmt.Sprintf("%d-%d", proof.BatchNumber, proof.BatchNumberFinal))
 			log.Info("Verifying final proof with ethereum smart contract")
 
+			// NOTE: 开始提交证明，这里加锁
 			a.startProofVerification()
 
+			// NOTE: 构造交易
 			finalBatch, err := a.State.GetBatchByNumber(ctx, proof.BatchNumberFinal, nil)
 			if err != nil {
 				log.Errorf("Failed to retrieve batch with number [%d]: %v", proof.BatchNumberFinal, err)
@@ -266,6 +286,7 @@ func (a *Aggregator) sendFinalProof() {
 
 			log.Infof("Final proof inputs: NewLocalExitRoot [%#x], NewStateRoot [%#x]", inputs.NewLocalExitRoot, inputs.NewStateRoot)
 
+			// NOTE: 这里只是构造交易，并且发送后记录下这比交易的执行情况
 			// add batch verification to be monitored
 			sender := common.HexToAddress(a.cfg.SenderAddress)
 			to, data, err := a.Ethman.BuildTrustedVerifyBatchesTxData(proof.BatchNumber-1, proof.BatchNumberFinal, &inputs)
@@ -289,6 +310,7 @@ func (a *Aggregator) sendFinalProof() {
 			}, nil)
 
 			a.resetVerifyProofTime()
+			// NOTE: 解锁
 			a.endProofVerification()
 		}
 	}
@@ -331,6 +353,7 @@ func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface
 
 	log.Info("Final proof generated")
 
+	// TODO: 不明所以
 	// mock prover sanity check
 	if string(finalProof.Public.NewStateRoot) == mockedStateRoot && string(finalProof.Public.NewLocalExitRoot) == mockedLocalExitRoot {
 		// This local exit root and state root come from the mock
@@ -352,6 +375,7 @@ func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface
 // build the final proof.  If no proof is provided it looks for a previously
 // generated proof.  If the proof is eligible, then the final proof generation
 // is triggered.
+// NOTE: 检查所提供的证明是否有资格用于构建最终证明。如果没有提供证据，它会查找以前生成的证据。如果证明是合格的，则触发最终证明生成。
 func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterface, proof *state.Proof) (bool, error) {
 	proverName := prover.Name()
 	proverID := prover.ID()
@@ -363,6 +387,7 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 	)
 	log.Debug("tryBuildFinalProof start")
 
+	// TODO: 定时检查prover 是否可用
 	var err error
 	if !a.canVerifyProof() {
 		log.Debug("Time to verify proof not reached or proof verification in progress")
@@ -370,6 +395,7 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 	}
 	log.Debug("Send final proof time reached")
 
+	// TODO: 确保状态是最新的
 	for !a.isSynced(ctx, nil) {
 		log.Info("Waiting for synchronizer to sync...")
 		time.Sleep(a.cfg.RetryTime.Duration)
@@ -377,6 +403,7 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 	}
 
 	var lastVerifiedBatchNum uint64
+	// NOTE: 先获取最后一次verify通过的批次号
 	lastVerifiedBatch, err := a.State.GetLastVerifiedBatch(ctx, nil)
 	if err != nil && !errors.Is(err, state.ErrNotFound) {
 		return false, fmt.Errorf("failed to get last verified batch, %w", err)
@@ -389,6 +416,7 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 		// we don't have a proof generating at the moment, check if we
 		// have a proof ready to verify
 
+		// NOTE: 在这里应该是去数据查询该批次是否已经生成了proof
 		proof, err = a.getAndLockProofReadyToVerify(ctx, prover, lastVerifiedBatchNum)
 		if errors.Is(err, state.ErrNotFound) {
 			// nothing to verify, swallow the error
@@ -410,6 +438,9 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 			}
 		}()
 	} else {
+
+		// NOTE: 现在我们拿到了证明， 需要验证下证明是不是我们要的
+
 		// we do have a proof generating at the moment, check if it is
 		// eligible to be verified
 		eligible, err := a.validateEligibleFinalProof(ctx, proof, lastVerifiedBatchNum)
@@ -426,6 +457,7 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 		"batches", fmt.Sprintf("%d-%d", proof.BatchNumber, proof.BatchNumberFinal),
 	)
 
+	// NOTE:
 	// at this point we have an eligible proof, build the final one using it
 	finalProof, err := a.buildFinalProof(ctx, prover, proof)
 	if err != nil {
@@ -750,11 +782,13 @@ func (a *Aggregator) getAndLockBatchToProve(ctx context.Context, prover proverIn
 	a.StateDBMutex.Lock()
 	defer a.StateDBMutex.Unlock()
 
+	// NOTE: 获取上一个已经verify通过的批次
 	lastVerifiedBatch, err := a.State.GetLastVerifiedBatch(ctx, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// TODO: 该批次不是证明了？
 	// Get virtual batch pending to generate proof
 	batchToVerify, err := a.State.GetVirtualBatchToProve(ctx, lastVerifiedBatch.BatchNumber, nil)
 	if err != nil {
@@ -854,6 +888,8 @@ func (a *Aggregator) tryGenerateBatchProof(ctx context.Context, prover proverInt
 	log.Infof("Sending a batch to the prover. OldStateRoot [%#x], OldBatchNum [%d]",
 		inputProver.PublicInputs.OldStateRoot, inputProver.PublicInputs.OldBatchNum)
 
+	// NOTE: 参考 https://wiki.polygon.technology/docs/zkevm/zkProver/proving-architecture/
+	// NOTE: 调用prover 生成批次证明, compression stage, 生成的是zkstark证明
 	genProofID, err = prover.BatchProof(inputProver)
 	if err != nil {
 		err = fmt.Errorf("failed to get batch proof id, %w", err)
@@ -866,6 +902,7 @@ func (a *Aggregator) tryGenerateBatchProof(ctx context.Context, prover proverInt
 	log.Infof("Proof ID %v", *proof.ProofID)
 	log = log.WithFields("proofId", *proof.ProofID)
 
+	// NOTE aggregation state, 聚合多个批次证明
 	resGetProof, err := prover.WaitRecursiveProof(ctx, *proof.ProofID)
 	if err != nil {
 		err = fmt.Errorf("failed to get proof from prover, %w", err)
@@ -880,6 +917,7 @@ func (a *Aggregator) tryGenerateBatchProof(ctx context.Context, prover proverInt
 	// NOTE(pg): the defer func is useless from now on, use a different variable
 	// name for errors (or shadow err in inner scopes) to not trigger it.
 
+	// NOTE final stage 将 recursive proof 转换为 snark proof
 	finalProofBuilt, finalProofErr := a.tryBuildFinalProof(ctx, prover, proof)
 	if finalProofErr != nil {
 		// just log the error and continue to handle the generated proof
@@ -971,6 +1009,7 @@ func (a *Aggregator) isSynced(ctx context.Context, batchNum *uint64) bool {
 	return true
 }
 
+// NOTE: ref https://wiki.polygon.technology/docs/zkevm/zkProver/circom-in-zkprover/
 func (a *Aggregator) buildInputProver(ctx context.Context, batchToVerify *state.Batch) (*prover.InputProver, error) {
 	previousBatch, err := a.State.GetBatchByNumber(ctx, batchToVerify.BatchNumber-1, nil)
 	if err != nil && err != state.ErrStateNotSynchronized {
@@ -979,16 +1018,22 @@ func (a *Aggregator) buildInputProver(ctx context.Context, batchToVerify *state.
 
 	inputProver := &prover.InputProver{
 		PublicInputs: &prover.PublicInputs{
-			OldStateRoot:    previousBatch.StateRoot.Bytes(),
+			// NOTE: 上一个批次的RootHash
+			OldStateRoot: previousBatch.StateRoot.Bytes(),
+			// NOTE: 上一个批次的AccInputHash
 			OldAccInputHash: previousBatch.AccInputHash.Bytes(),
-			OldBatchNum:     previousBatch.BatchNumber,
-			ChainId:         a.cfg.ChainID,
-			ForkId:          a.cfg.ForkId,
-			BatchL2Data:     batchToVerify.BatchL2Data,
-			GlobalExitRoot:  batchToVerify.GlobalExitRoot.Bytes(),
-			EthTimestamp:    uint64(batchToVerify.Timestamp.Unix()),
-			SequencerAddr:   batchToVerify.Coinbase.String(),
-			AggregatorAddr:  a.cfg.SenderAddress,
+			// NOTE: 上一个批次的批次号
+			OldBatchNum: previousBatch.BatchNumber,
+			ChainId:     a.cfg.ChainID,
+			ForkId:      a.cfg.ForkId,
+			// NOTE: L2交易数据
+			BatchL2Data: batchToVerify.BatchL2Data,
+
+			// TODO: 为什么这里传输的是当前批次的GlobalExitRoot
+			GlobalExitRoot: batchToVerify.GlobalExitRoot.Bytes(),
+			EthTimestamp:   uint64(batchToVerify.Timestamp.Unix()),
+			SequencerAddr:  batchToVerify.Coinbase.String(),
+			AggregatorAddr: a.cfg.SenderAddress,
 		},
 		Db:                map[string]string{},
 		ContractsBytecode: map[string]string{},

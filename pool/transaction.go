@@ -10,6 +10,7 @@ import (
 
 const (
 	// TxStatusPending represents a tx that has not been processed
+	// 新建的交易就是Pending状态
 	TxStatusPending TxStatus = "pending"
 	// TxStatusInvalid represents an invalid tx
 	TxStatusInvalid TxStatus = "invalid"

@@ -115,11 +115,13 @@ func (s *Sequencer) Start(ctx context.Context) {
 	closingSignalsManager := newClosingSignalsManager(ctx, finalizer.dbManager, closingSignalCh, finalizer.cfg, s.etherman)
 	go closingSignalsManager.Start()
 
+	// NOTE: 处理超过一定区块未被打包的交易
 	go s.purgeOldPoolTxs(ctx)
 	tickerProcessTxs := time.NewTicker(s.cfg.WaitPeriodPoolIsEmpty.Duration)
 	defer tickerProcessTxs.Stop()
 
 	// Expire too old txs in the worker
+	// NOTE: 处理超时过期的交易
 	go func() {
 		for {
 			time.Sleep(s.cfg.TxLifetimeCheckTimeout.Duration)
@@ -194,6 +196,7 @@ func (s *Sequencer) bootstrap(ctx context.Context, dbManager *dbManager, finaliz
 	return currBatch, processRequest
 }
 
+// NOTE: 处理超过一定区块未被打包的交易 ref config: FrequencyToCheckTxsForDelete
 func (s *Sequencer) purgeOldPoolTxs(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.FrequencyToCheckTxsForDelete.Duration)
 	for {

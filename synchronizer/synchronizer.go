@@ -110,11 +110,15 @@ func (s *ClientSynchronizer) Sync() error {
 	// If there is no lastEthereumBlock means that sync from the beginning is necessary. If not, it continues from the retrieved ethereum block
 	// Get the latest synced block. If there is no block on db, use genesis block
 	log.Info("Sync started")
+
+	// NOTE: 开启事务
 	dbTx, err := s.state.BeginStateTransaction(s.ctx)
 	if err != nil {
 		log.Errorf("error creating db transaction to get latest block. Error: %v", err)
 		return err
 	}
+
+	// NOTE: 获取最新的区块
 	lastEthBlockSynced, err := s.state.GetLastBlock(s.ctx, dbTx)
 	if err != nil {
 		if errors.Is(err, state.ErrStateNotSynchronized) {
@@ -232,22 +236,30 @@ func (s *ClientSynchronizer) Sync() error {
 			return nil
 		case <-time.After(waitDuration):
 			start := time.Now()
+
+			// NOTE: L1最新批次
 			latestSequencedBatchNumber, err := s.etherMan.GetLatestBatchNumber()
 			if err != nil {
 				log.Warn("error getting latest sequenced batch in the rollup. Error: ", err)
 				continue
 			}
+
+			// NOTE: L2当前同步到的批次
 			latestSyncedBatch, err := s.state.GetLastBatchNumber(s.ctx, nil)
 			if err != nil {
 				log.Warn("error getting latest batch synced in the db. Error: ", err)
 				continue
 			}
+
+			// NOTE: L1 已经验证的批次
 			// Check the latest verified Batch number in the smc
 			lastVerifiedBatchNumber, err := s.etherMan.GetLatestVerifiedBatchNum()
 			if err != nil {
 				log.Warn("error getting last verified batch in the rollup. Error: ", err)
 				continue
 			}
+
+			// NOTE: 更新L1最新状态到L2, 意味着，要从L2的批次 追上 L1的批次
 			err = s.state.SetLastBatchInfoSeenOnEthereum(s.ctx, latestSequencedBatchNumber, lastVerifiedBatchNumber, nil)
 			if err != nil {
 				log.Warn("error setting latest batch info into db. Error: ", err)

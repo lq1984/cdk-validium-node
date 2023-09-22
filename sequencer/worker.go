@@ -16,6 +16,7 @@ import (
 
 // Worker represents the worker component of the sequencer
 type Worker struct {
+	// 交易池
 	pool         map[string]*addrQueue
 	txSortedList *txSortedList
 	workerMutex  sync.Mutex
@@ -45,21 +46,28 @@ func (w *Worker) AddTxTracker(ctx context.Context, tx *TxTracker) (replacedTx *T
 	addr, found := w.pool[tx.FromStr]
 
 	if !found {
+		// 还没添加到池子里面
+
 		// Unlock the worker to let execute other worker functions while creating the new AddrQueue
 		w.workerMutex.Unlock()
 
+		// 最新的root hash
 		root, err := w.state.GetLastStateRoot(ctx, nil)
 		if err != nil {
 			dropReason = fmt.Errorf("AddTx GetLastStateRoot error: %v", err)
 			log.Error(dropReason)
 			return nil, dropReason
 		}
+
+		// 获取当前状态对应的最新的nonce
 		nonce, err := w.state.GetNonceByStateRoot(ctx, tx.From, root)
 		if err != nil {
 			dropReason = fmt.Errorf("AddTx GetNonceByStateRoot error: %v", err)
 			log.Error(dropReason)
 			return nil, dropReason
 		}
+
+		// 获取当前状态对应的余额
 		balance, err := w.state.GetBalanceByStateRoot(ctx, tx.From, root)
 		if err != nil {
 			dropReason = fmt.Errorf("AddTx GetBalanceByStateRoot error: %v", err)
@@ -67,6 +75,7 @@ func (w *Worker) AddTxTracker(ctx context.Context, tx *TxTracker) (replacedTx *T
 			return nil, dropReason
 		}
 
+		//
 		addr = newAddrQueue(tx.From, nonce.Uint64(), balance)
 
 		// Lock again the worker
@@ -75,6 +84,8 @@ func (w *Worker) AddTxTracker(ctx context.Context, tx *TxTracker) (replacedTx *T
 		w.pool[tx.FromStr] = addr
 		log.Infof("AddTx new addrQueue created for addr(%s) nonce(%d) balance(%s)", tx.FromStr, nonce.Uint64(), balance.String())
 	}
+
+	// 池子里面已经存在该 sender的交易
 
 	// Add the txTracker to Addr and get the newReadyTx and prevReadyTx
 	log.Infof("AddTx new tx(%s) nonce(%d) gasPrice(%d) to addrQueue(%s) nonce(%d) balance(%d)", tx.HashStr, tx.Nonce, tx.GasPrice, addr.fromStr, addr.currentNonce, addr.currentBalance)

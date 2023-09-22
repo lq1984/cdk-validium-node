@@ -349,18 +349,18 @@ func (etherMan *Client) readEvents(ctx context.Context, query ethereum.FilterQue
 
 func (etherMan *Client) processEvent(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
 	switch vLog.Topics[0] {
-	case sequencedBatchesEventSignatureHash:
+	case sequencedBatchesEventSignatureHash: // NOTE: sequencer 提交L2批次
 		return etherMan.sequencedBatchesEvent(ctx, vLog, blocks, blocksOrder)
-	case updateGlobalExitRootSignatureHash:
+	case updateGlobalExitRootSignatureHash: // NOTE: GER状态更新
 		return etherMan.updateGlobalExitRootEvent(ctx, vLog, blocks, blocksOrder)
-	case forcedBatchSignatureHash:
+	case forcedBatchSignatureHash: // NOTE: 用户提交 forcedBatch
 		return etherMan.forcedBatchEvent(ctx, vLog, blocks, blocksOrder)
-	case verifyBatchesTrustedAggregatorSignatureHash:
+	case verifyBatchesTrustedAggregatorSignatureHash: // NOTE: trusted aggregator 验证批次通过
 		return etherMan.verifyBatchesTrustedAggregatorEvent(ctx, vLog, blocks, blocksOrder)
-	case verifyBatchesSignatureHash:
+	case verifyBatchesSignatureHash: // NOTE: untrusted aggregator 验证批次通过
 		log.Warn("VerifyBatches event not implemented yet")
 		return nil
-	case forceSequencedBatchesSignatureHash:
+	case forceSequencedBatchesSignatureHash: // NOTE: untrusted aggregator 提交forcedBatch
 		return etherMan.forceSequencedBatchesEvent(ctx, vLog, blocks, blocksOrder)
 	case setTrustedSequencerURLSignatureHash:
 		log.Debug("SetTrustedSequencerURL event detected")

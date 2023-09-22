@@ -12,6 +12,7 @@ import (
 )
 
 type storage interface {
+	// 插入一笔交易
 	AddTx(ctx context.Context, tx Transaction) error
 	CountTransactionsByStatus(ctx context.Context, status ...TxStatus) (uint64, error)
 	CountTransactionsByFromAndStatus(ctx context.Context, from common.Address, status ...TxStatus) (uint64, error)
